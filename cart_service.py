@@ -14,7 +14,7 @@ PRODUCT_SERVICE_URL = "https://product-service-x70a.onrender.com."
 
 
 class Cart(db.Model):
-    user_id = db.Column(db.Integer, unique=True, nullable=False)
+    user_id = db.Column(db.Integer, primary_key=True, unique=True, nullable=False)
     total_price = db.Column(db.Float, default=0.0)
 
 
