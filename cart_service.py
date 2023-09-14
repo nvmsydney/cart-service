@@ -10,7 +10,7 @@ app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'cart.sqlite')
 db = SQLAlchemy(app)
 
-PRODUCT_SERVICE_URL = "https://product-service.onrender.com"
+PRODUCT_SERVICE_URL = "https://product-service-x70a.onrender.com."
 
 
 class Cart(db.Model):
