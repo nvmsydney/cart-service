@@ -1,119 +1,92 @@
-import os
-
 import requests
 from flask import Flask, jsonify, request
-from flask_sqlalchemy import SQLAlchemy
-
-basedir = os.path.abspath(os.path.dirname(__file__))
 
 app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'cart.sqlite')
-db = SQLAlchemy(app)
 
-PRODUCT_SERVICE_URL = "https://product-service-x70a.onrender.com"
+PRODUCT_SERVICE_URL = "https://saas-product-service.onrender.com"
 
-
-class Cart(db.Model):
-    user_id = db.Column(db.Integer, primary_key=True, unique=True, nullable=False)
-    total_price = db.Column(db.Float, default=0.0)
+carts = {}
 
 
-class CartItem(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('cart.user_id'), nullable=False)
-    product_id = db.Column(db.Integer, nullable=False)
-    quantity = db.Column(db.Integer, default=1)
+@app.route('/', methods=['GET'])
+def home():
+    return "Welcome to your cart!", 200
 
 
 @app.route('/cart/<int:user_id>', methods=['GET'])
 def get_cart(user_id):
-    cart = Cart.query.get(user_id)
-    if not cart:
-        return jsonify({"error": "Cart not found for user."}), 404
+    user_cart = carts.get(user_id, [])
 
-    items = []
+    response = requests.get(f'{PRODUCT_SERVICE_URL}/products')
+    if response.status_code != 200:
+        return jsonify({"error": "Unable to retrieve products from the product service."}), 500
+
+    all_products = response.json().get("products", [])
+    cart_contents = []
     total_price = 0
 
-    cart_items = CartItem.query.filter_by(user_id=user_id).all()
-    for item in cart_items:
-        product_details = requests.get(f'{PRODUCT_SERVICE_URL}/products/{item.product_id}').json().get("product")
-        if product_details:
-            price = product_details["price"]
-            total_price += price * item.quantity
-            items.append({
-                "product_id": item.product_id,
-                "product_name": product_details["product_name"],
-                "quantity": item.quantity,
-                "price": price
+    for item in user_cart:
+        product = next((p for p in all_products if p["id"] == item["id"]), None)
+        if product:
+            quantity = item["quantity"]
+            price_for_product = product["price"] * quantity
+            total_price += price_for_product
+            cart_contents.append({
+                "product_name": product["product_name"],
+                "quantity": quantity,
+                "total_price": price_for_product
             })
 
-    return jsonify({"items": items, "total_price": total_price})
+    return jsonify({
+        "cart_contents": cart_contents,
+        "total_price": total_price
+    })
 
 
 @app.route('/cart/<int:user_id>/add/<int:product_id>', methods=['POST'])
 def add_to_cart(user_id, product_id):
-    data = request.json
-    desired_quantity = data.get("quantity", 1)
+    quantity = request.json.get('quantity', 1)
 
     response = requests.get(f'{PRODUCT_SERVICE_URL}/products/{product_id}')
     if response.status_code != 200:
         return jsonify({"error": "Product not found."}), 404
 
-    product_data = response.json().get("product")
-    product_name = product_data.get("product_name")
-    available_quantity = product_data.get("quantity")
-    price = product_data.get("price")
+    if user_id not in carts:
+        carts[user_id] = []
 
-    if available_quantity < desired_quantity:
-        return jsonify({"error": "Not enough stock available."}), 400
-
-    cart = Cart.query.get(user_id)
-    if not cart:
-        cart = Cart(user_id=user_id)
-        db.session.add(cart)
-
-    cart_item = CartItem.query.filter_by(user_id=user_id, product_id=product_id).first()
-    if not cart_item:
-        cart_item = CartItem(user_id=user_id, product_id=product_id, quantity=desired_quantity)
-        cart.total_price += price * desired_quantity
-        db.session.add(cart_item)
+    product_in_cart = next((item for item in carts[user_id] if item["id"] == product_id), None)
+    if product_in_cart:
+        product_in_cart["quantity"] += quantity
     else:
-        cart_item.quantity += desired_quantity
-        cart.total_price += price * desired_quantity
+        carts[user_id].append({
+            "id": product_id,
+            "quantity": quantity
+        })
 
-    db.session.commit()
-    return jsonify({"message": f"Added {desired_quantity} of {product_name} to the cart."})
+    return jsonify({"message": f"Added {quantity} of product to cart", "cart": carts[user_id]}), 201
 
 
 @app.route('/cart/<int:user_id>/remove/<int:product_id>', methods=['POST'])
 def remove_from_cart(user_id, product_id):
-    data = request.json
-    remove_quantity = data.get("quantity", 1)
+    quantity_to_remove = request.json.get('quantity', None)
 
-    cart = Cart.query.get(user_id)
-    if not cart:
-        return jsonify({"error": "Cart not found for user."}), 404
+    if user_id not in carts:
+        return jsonify({"error": "No cart found for the user."}), 404
 
-    cart_item = CartItem.query.filter_by(user_id=user_id, product_id=product_id).first()
-    if not cart_item:
+    product_in_cart = next((item for item in carts[user_id] if item["id"] == product_id), None)
+    if not product_in_cart:
         return jsonify({"error": "Product not found in cart."}), 404
 
-    product_details = requests.get(f'{PRODUCT_SERVICE_URL}/products/{product_id}').json().get("product")
-    price = product_details["price"]
+    if quantity_to_remove:
+        product_in_cart["quantity"] -= quantity_to_remove
 
-    if cart_item.quantity > remove_quantity:
-        cart_item.quantity -= remove_quantity
-        cart.total_price -= price * remove_quantity
+        if product_in_cart["quantity"] <= 0:
+            carts[user_id] = [item for item in carts[user_id] if item["id"] != product_id]
     else:
-        cart.total_price -= price * cart_item.quantity
-        db.session.delete(cart_item)
+        carts[user_id] = [item for item in carts[user_id] if item["id"] != product_id]
 
-    db.session.commit()
-
-    return jsonify({"message": f"Removed {remove_quantity} of product {product_id} from the cart."})
+    return jsonify({"message": f"Removed {quantity_to_remove} of product from cart", "cart": carts[user_id]}), 200
 
 
 if __name__ == '__main__':
-    with app.app_context():
-        db.create_all()
     app.run(debug=True)
